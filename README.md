@@ -1,12 +1,20 @@
 # TruthLens – Chrome Extension Prototype
 
-TruthLens is a simple, end-to-end prototype for a Chrome Extension that analyzes Amazon product pages to:
+TruthLens is a hackathon‑ready Chrome extension + local FastAPI backend that helps users decide **whether to trust an e‑commerce product or site**.
 
-- Detect potentially fake / botted reviews
-- Summarize key **pros** and **cons** using GenAI (Google Gemini)
-- Check whether the site looks **safe** or potentially **phishy**
+It works in two modes:
 
-This project is intentionally lightweight and hackathon-friendly. There is no database or persistence; everything runs locally.
+- **Marketplace review mode (Amazon / Flipkart)**:  
+  Analyzes product reviews to detect fake/botted patterns, estimate trust, and summarize pros/cons.
+- **Site‑level risk mode (any other site, e.g. Meesho or random shops)**:  
+  Analyzes the domain and visible page text (and price vs Amazon.in) to estimate whether the **website itself** looks risky or scammy.
+
+Everything runs locally except:
+
+- Optional **Gemini** calls for pros/cons/verdict text.
+- A lightweight HTML request to **Amazon.in search** for price sanity checking.
+
+There is **no database** and no persistence; it’s a vertical slice meant to demo end‑to‑end AI + browser integration.
 
 ---
 
@@ -19,13 +27,13 @@ TruthLens/
 │   ├── main.py                 # FastAPI server entry point
 │   ├── logic.py                # Core analysis logic
 │   ├── requirements.txt        # Python dependencies
-│   └── .env                    # Stores GEMINI_API_KEY
+│   └── .env                    # Stores GEMINI_API_KEY (optional)
 ├── extension/
 │   ├── manifest.json           # Chrome extension manifest (MV3)
 │   ├── popup.html              # UI shown when clicking the extension
 │   ├── popup.css               # Popup styling
 │   ├── popup.js                # Popup logic (talks to backend)
-│   ├── content.js              # Scrapes Amazon product pages
+│   ├── content.js              # Scraper + page text collector
 │   └── icons/                  # Placeholder icons
 │       ├── icon16.png
 │       ├── icon48.png
@@ -35,12 +43,12 @@ TruthLens/
 
 ---
 
-## 2. Backend Setup (FastAPI + Gemini + DistilBERT)
+## 2. Backend Setup (FastAPI + DistilBERT + Gemini)
 
 ### 2.1. Prerequisites
 
-- Python 3.9+ installed
-- `pip` available on your PATH
+- **Python 3.9+**
+- `pip` on your PATH
 
 ### 2.2. Create and activate a virtual environment
 
@@ -71,6 +79,15 @@ From inside the virtual environment:
 pip install -r requirements.txt
 ```
 
+This installs (among others):
+
+- **fastapi**, **uvicorn**
+- **transformers**, **torch** (DistilBERT sentiment)
+- **textblob** (fallback sentiment)
+- **google-generativeai** (Gemini, optional)
+- **python-levenshtein** (phishing + duplicate detection)
+- **requests** (price sanity check vs Amazon.in)
+
 ### 2.4. Configure your Gemini API key (optional)
 
 Edit the `.env` file in `backend/`:
@@ -79,8 +96,10 @@ Edit the `.env` file in `backend/`:
 GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
-- If this value is **valid**, the backend will call the real Google Gemini API for review summarization and bot-score estimation.
-- If the key is **missing** or the call **fails**, the backend automatically falls back to **mock data** (fixed pros/cons/verdict). This is perfect for quickly demoing the UI with no external dependencies.
+- If this value is **valid**, the backend uses Gemini to generate pros/cons + verdict.
+- If the key is **missing** or the call **fails**, the backend still works using:
+  - DistilBERT + heuristics for scoring.
+  - Simple fallback pros/cons/verdict.
 
 ### 2.5. Run the backend server
 
@@ -96,9 +115,13 @@ This starts the FastAPI app using Uvicorn on:
 
 You can verify it’s running by visiting:
 
-- `http://127.0.0.1:8000/health`
+- `http://127.0.0.1:8000/`
 
-You should see a small JSON response: `{"status": "ok"}`.
+You should see a small JSON response similar to:
+
+```json
+{"status": "TruthLens Backend is Running"}
+```
 
 ---
 
@@ -108,41 +131,151 @@ You should see a small JSON response: `{"status": "ok"}`.
 
 1. Open Chrome.
 2. Go to `chrome://extensions`.
-3. Turn on **Developer mode** (top-right toggle).
+3. Turn on **Developer mode** (top‑right toggle).
 4. Click **“Load unpacked”**.
 5. Select the `TruthLens/extension` folder.
 
-Chrome should now show the **TruthLens** extension in the list, with a small icon.
+Chrome should now show the **TruthLens** extension with its icon.
 
 ### 3.2. What the extension does
 
-- The popup shows an **“Analyze Page”** button.
-- When you click it on an Amazon product page:
-  1. It injects `content.js` into the active tab.
-  2. The content script scrapes:
-     - Product title (`#productTitle`)
-     - Up to **10** top reviews (`[data-hook="review-body"]` text content)
+When you click the TruthLens icon:
+
+- The popup shows a big **“Analyze Page”** button and a status line.
+- On click:
+  1. It injects or talks to `content.js` on the active tab.
+  2. The content script:
+     - If the URL contains **`amazon`**:
+       - Scrapes product title (`#productTitle`).
+       - Scrapes up to 15 review blocks with:
+         - Review text
+         - Star rating
+         - Review date
+         - Verified purchase flag
+     - If the URL contains **`flipkart`**:
+       - Scrapes product title (`.B_NuCI` / `.mEh187`).
+       - Scrapes review cards (`div.col.EPCmJX`) with text, rating, date (verified assumed `true`).
+     - For **all sites**:
+       - Collects compacted `page_text` from the DOM for site‑level risk analysis.
   3. The popup sends a POST request to `http://127.0.0.1:8000/analyze` with:
-     - `url` – the current page URL
-     - `reviews` – array of review strings
-  4. The backend:
-     - Checks for **phishing/typosquatting** using Levenshtein distance against a whitelist (`amazon.com`, `flipkart.com`).
-     - Runs **TextBlob** sentiment analysis across all reviews.
-     - Calls **Google Gemini** (or uses mock data) to get:
-       - `pros` (3 bullet points)
-       - `cons` (3 bullet points)
-       - `bot_score` (0–100 likelihood of reviews being botted)
-       - `verdict` (short textual summary)
-     - Combines everything into a single **trust score (0–100)**.
+     - `url`, `title`
+     - `reviews`: array of structured review objects (Amazon/Flipkart) **or** an empty list on other sites.
+     - `page_text`: visible page text.
+  4. The backend analyzes either:
+     - **Review trust** (Amazon/Flipkart mode), or
+     - **Site‑level risk** (any other site, including Meesho).
   5. The popup displays:
-     - **Trust Score** (big colored number)
-     - **Safety badge** (e.g. “Likely Safe”, “Caution Advised”, “High Risk (Possible Phishing)”)
-     - **Pros & Cons** lists
-     - **Verdict** text
+     - **Trust Score** (big colored number).
+     - **Safety badge** (“Likely Authentic”, “Moderate Risk”, “High Risk / Possible Scam”, etc.).
+     - **“Why this score?” strip** with 3–5 bullet signals.
+     - **Pros & Cons** lists.
+     - **Verdict** text.
+     - **Bot Probability** in the footer.
 
 ---
 
-## 4. Demo Instructions (Hackathon Workflow)
+## 4. How the analysis works
+
+### 4.1. Marketplace review mode (Amazon / Flipkart)
+
+Triggered when structured reviews are scraped.
+
+- **Sentiment (DistilBERT)**
+  - Model: `distilbert-base-uncased-finetuned-sst-2-english`.
+  - Each review → POSITIVE/NEGATIVE + confidence → mapped to a continuous score in \[-1, 1\].
+  - Average sentiment → mapped to 0–100.
+
+- **Traditional bot / fake‑review heuristics**
+  - Duplicate review texts → possible copy‑paste/bot.
+  - Very short reviews → low effort.
+  - Rating vs sentiment mismatch:
+    - 5★ but text is negative → suspicious.
+  - Rating variance:
+    - All 5★ with almost no variance → mildly suspicious if enough reviews.
+  - Combined into a numeric **`bot_probability` 0–100** (shown in the footer and “Why this score?” strip).
+
+- **Trust score (0–100)**
+  - Combines:
+    - Sentiment component
+    - Rating component
+    - Review volume component (few reviews → lower confidence)
+  - Applies small penalties for:
+    - Sentiment/rating mismatch
+    - Duplicate texts
+    - Ultra‑short reviews
+    - Very low review count
+  - Final label:
+    - `>= 80` → **“Likely Authentic”**
+    - `>= 50` → **“Moderate Risk”**
+    - `< 50` → **“High Risk / Caution”**
+
+- **Gemini summarization (optional)**
+  - Model: e.g. `gemini-1.5-flash` / `gemini-2.5-flash` via `google-generativeai`.
+  - Input: a small batch of structured reviews.
+  - Output (JSON only):
+    - `pros`: bullet points.
+    - `cons`: bullet points.
+    - `verdict`: one‑sentence buying advice.
+  - **Important**: Gemini does **not** influence the numeric trust score; it only generates text.
+
+- **Explainability (“Why this score?”)**
+  - Example bullets for a product on Amazon:
+    - `Sentiment: 0.82 (DistilBERT)`
+    - `Bot probability: 15% (duplicates/short-review heuristics)`
+    - `Reviews analyzed: 120 (Amazon)`
+    - `Domain: amazon.in (Safe)`
+
+### 4.2. Site‑level risk mode (any other site)
+
+Triggered when **no structured reviews** are scraped (e.g. Meesho product page, random D2C shop).
+
+- **Phishing / typosquatting (Levenshtein)**
+  - Whitelist domains: `amazon.com`, `amazon.in`, `flipkart.com`, `ebay.com`, `walmart.com`, `meesho.com`, etc.
+  - Exact match → **Safe**.
+  - Distance ≤ 2 from a whitelist domain (e.g. `amaz0n.in`) → **Phishing Warning**.
+  - Anything else → **Suspicious / Unverified**.
+
+- **Page‑content risk heuristics**
+  - Flags aggressive scam signals:
+    - “80–100% OFF”, “only today”, “limited stock”, “win big”, etc.
+  - Flags payment oddities:
+    - “UPI only”, “Paytm only”, “Bitcoin”.
+  - Flags dangerous policies:
+    - “No refund”, “no returns”, “non‑refundable”.
+  - Adds positive signals if it sees:
+    - “Return policy”, “refund policy”, “contact us”, “privacy policy”, “terms & conditions”.
+
+- **Price sanity check vs Amazon.in**
+  - Extracts a **local price** from the current page (`₹2,999`, `Rs. 1,499`, etc.).
+  - Searches `amazon.in` with the product title and extracts a **reference price** from search results HTML.
+  - If local price is more than **50% cheaper** than the reference:
+    - Lowers the site score.
+    - Adds a clear con:
+      - “Price appears much lower than on major marketplaces (local ≈ ₹X vs reference ≈ ₹Y).”
+  - If prices are similar:
+    - Adds a small pro:
+      - “Price appears broadly in line with major marketplaces.”
+
+- **Site‑level trust & label**
+  - Score and label depend on:
+    - Domain status (Safe / Phishing Warning / Suspicious).
+    - Scammy language.
+    - Payment/refund wording.
+    - Price sanity.
+  - Labels:
+    - `>= 75` → **“Likely Legitimate (Site‑level)”**
+    - `>= 45` → **“Unverified Site / Use Caution”**
+    - `< 45` → **“High Risk / Possible Scam”**
+
+- **Explainability (“Why this score?”)**
+  - Example bullets for a random store:
+    - `Mode: Site-level risk (no product reviews scraped)`
+    - `Domain: example-shop.com (Suspicious)`
+    - `Price sanity: Possible anomaly vs major marketplaces (could be counterfeit/scam).`
+
+---
+
+## 5. Demo Instructions (Hackathon Workflow)
 
 1. **Start backend**
    - Open a terminal.
@@ -151,43 +284,32 @@ Chrome should now show the **TruthLens** extension in the list, with a small ico
    - Run `python main.py`.
 2. **Load extension**
    - In Chrome, load the unpacked extension from `TruthLens/extension`.
-3. **Open an Amazon product page**
-   - For example, any product on `https://www.amazon.com/...`.
-4. **Run TruthLens**
-   - Click the TruthLens icon in the Chrome toolbar.
-   - Click **“Analyze Page”**.
-   - Wait a couple of seconds for the results to appear.
-
-You should now see the Trust Score, safety label, pros/cons, and overall verdict. If Gemini is not configured, the values will still populate using the built-in mock response.
+3. **Demo 1 – Amazon / Flipkart (review trust)**
+   - Open a popular product on Amazon.in or Flipkart.
+   - Click the TruthLens icon → **Analyze Page**.
+   - Talk through:
+     - Trust Score + Safety badge.
+     - Pros/Cons + verdict.
+     - “Why this score?” bullets (sentiment, bot probability, reviews analyzed, domain).
+4. **Demo 2 – Meesho or unknown shop (site risk + price sanity)**
+   - Open a product page on Meesho or a random store with a strong discount.
+   - Click **Analyze Page**.
+   - Show:
+     - Site‑level Trust Score and label.
+     - Pros/Cons mentioning scam language, policies, and price anomaly (if any).
+     - “Why this score?” bullets highlighting **Site‑level risk** mode and domain status.
 
 ---
 
-## 5. Model Stack (for judges / explainability)
-
-- **Sentiment Analysis – DistilBERT**
-  - Model: `distilbert-base-uncased-finetuned-sst-2-english` (via `transformers`).
-  - Used to convert each review into a continuous sentiment score in \[-1, 1\], then averaged.
-  - Fast, lightweight, and widely used for Positive/Negative sentiment.
-
-- **Fake Review / Bot Detection – Google Gemini**
-  - Model: `gemini-1.5-flash` (via `google-generativeai`).
-  - Given a small batch of structured reviews (text, rating, date, verified), it returns:
-    - `pros`, `cons`
-    - `bot_probability` (0–100)
-    - `verdict` (one-sentence buying advice)
-  - The backend treats Gemini as **advisory**: it can lower the trust score, but cannot by itself drive clearly good products on official sites down to 0.
-
-- **Phishing / Scam Detection – Levenshtein Distance**
-  - Library: `python-levenshtein`.
-  - Compares the current domain to a whitelist (`amazon.com`, `amazon.in`, `flipkart.com`, etc.).
-  - If the domain is 1–2 characters away from a known-good domain (e.g. `amaz0n.com`), it flags `"Phishing Warning"`.
-
 ## 6. Notes & Limitations
 
-- This is **not** production-ready; it’s a **vertical slice** designed for demo purposes.
-- No database, no user accounts, and minimal error handling by design.
-- Gemini usage is **optional** – if the API key is missing, the system still works with DistilBERT + heuristics (you just lose GenAI pros/cons).
-- The scoring is intentionally tuned to be **conservative about calling genuine products “fake”**, especially on official marketplaces.
+- This is **not** production‑ready; it’s a **vertical slice** for demo purposes.
+- No database, no auth, minimal error handling.
+- Gemini usage is **optional** and does not affect the numeric scores.
+- DistilBERT + heuristics are tuned to be:
+  - **Conservative about calling genuine products “fake”** on official marketplaces.
+  - **Cautious** on unknown sites, especially with typosquatting or extreme discounts.
 
-Feel free to extend this prototype with richer UI, more marketplaces, or additional models as part of your hackathon work.
+You can extend TruthLens by adding more marketplaces, richer UI (e.g. highlighting suspicious reviews directly on the page), or deeper OSINT / reputation checks for domains.
+
 
