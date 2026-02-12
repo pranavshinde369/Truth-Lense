@@ -60,26 +60,40 @@ async def analyze_product(payload: ScrapeRequest):
 
     try:
         domain_status = check_phishing(payload.url)
-        
+
         # Convert Pydantic models to dicts
         review_dicts = []
         for r in payload.reviews:
-            if hasattr(r, 'model_dump'):
+            if hasattr(r, "model_dump"):
                 review_dicts.append(r.model_dump())
             else:
                 review_dicts.append(r.dict())
 
         analysis_result = analyze_reviews(review_dicts)
 
+        base_trust = int(analysis_result.get("trust_score", 0))
+        sentiment_score = float(analysis_result.get("sentiment_score", 0.0))
+        bot_prob = int(analysis_result.get("bot_probability", 0))
+        review_count = len(review_dicts)
+
+        # Final calibration step: on clearly official, safe domains with good sentiment,
+        # avoid overly harsh scores. This matches the "very_safe" UX you want.
+        calibrated_trust = base_trust
+        if domain_status == "Safe":
+            if review_count >= 50 and sentiment_score > 0.4 and bot_prob <= 60:
+                calibrated_trust = max(calibrated_trust, 80)
+            elif review_count >= 20 and sentiment_score > 0.3 and bot_prob <= 70:
+                calibrated_trust = max(calibrated_trust, 70)
+
         return AnalysisResponse(
-            trust_score=analysis_result.get("trust_score", 0),
-            sentiment_score=analysis_result.get("sentiment_score", 0.0),
-            bot_probability=analysis_result.get("bot_probability", 0),
+            trust_score=calibrated_trust,
+            sentiment_score=round(sentiment_score, 2),
+            bot_probability=bot_prob,
             safety_label=analysis_result.get("safety_label", "Unknown"),
             pros=analysis_result.get("pros", []),
             cons=analysis_result.get("cons", []),
             verdict=analysis_result.get("verdict", "No verdict available"),
-            phishing_status=domain_status
+            phishing_status=domain_status,
         )
 
     except Exception as e:

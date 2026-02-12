@@ -141,12 +141,11 @@ def analyze_reviews(reviews_data: List[Dict[str, Any]]) -> Dict[str, Any]:
     normalized_rating = (avg_rating - 2.5) / 2.5 
     discrepancy = abs(normalized_rating - avg_sentiment)
 
-    # 4. GEMINI ANALYSIS
+    # 4. GEMINI ANALYSIS (for pros/cons + verdict only)
     gemini_output = {
-        "pros": [], 
-        "cons": [], 
-        "bot_probability": 0, 
-        "verdict": "Analysis unavailable"
+        "pros": [],
+        "cons": [],
+        "verdict": "Analysis unavailable",
     }
 
     if genai and GEMINI_API_KEY:
@@ -164,18 +163,16 @@ def analyze_reviews(reviews_data: List[Dict[str, Any]]) -> Dict[str, Any]:
             {json.dumps(reviews_for_prompt, indent=2)}
 
             Your Tasks:
-            1. Detect "Review Bombing" (many 5-star reviews with very similar wording or dates).
-            2. Detect "Bot Speak" (generic, repetitive phrasing like "Good product", "Nice product", copy-paste patterns).
-            3. Detect "Sentiment Mismatch" (5 stars but the text complains).
+            1. Summarize the main pros buyers mention.
+            2. Summarize the main cons / complaints buyers mention.
+            3. Give a one-sentence buying advice verdict.
 
-            Be conservative: only output a very high bot_probability (>70) when the evidence of bots/fake reviews is strong.
-            When you are not sure, assume reviews are mostly genuine but may be biased.
+            Do NOT estimate bot probability. Focus only on pros, cons, and verdict.
 
             Output strictly VALID JSON with this structure and nothing else:
             {{
                 "pros": ["short point 1", "short point 2"],
                 "cons": ["short point 1", "short point 2"],
-                "bot_probability": <integer between 0 and 100 representing likelihood of fake reviews>,
                 "verdict": "<one sentence buying advice>"
             }}
             """
@@ -189,22 +186,19 @@ def analyze_reviews(reviews_data: List[Dict[str, Any]]) -> Dict[str, Any]:
                 # Update gemini_output with valid keys from response
                 gemini_output["pros"] = parsed_result.get("pros", [])
                 gemini_output["cons"] = parsed_result.get("cons", [])
-                gemini_output["bot_probability"] = int(parsed_result.get("bot_probability", 0))
                 gemini_output["verdict"] = parsed_result.get("verdict", "No verdict provided.")
 
         except Exception as e:
             print(f"Gemini Analysis Error: {e}")
             gemini_output["verdict"] = "AI Analysis failed (Statistical mode only)."
 
-    # 5. TRUST SCORE CALCULATION
+    # 5. TRUST SCORE CALCULATION (TRADITIONAL ONLY)
     #
     # Goals:
     # - DistilBERT sentiment + star ratings + review volume form the base trust.
-    # - Gemini's bot_probability and our heuristics can lower the score, but
-    #   should not crash clearly good, well-reviewed products to zero.
-    # - We stay conservative about calling genuine products "fake".
-
-    bot_prob = int(gemini_output.get("bot_probability", 0))
+    # - Traditional heuristics (duplicates, short texts, sentiment/rating mismatch)
+    #   estimate a bot / fake-review probability.
+    # - Gemini is used ONLY for pros/cons + verdict, never for the score.
 
     # A. Base components
     # Sentiment: [-1, 1] -> [0, 100]
@@ -232,19 +226,40 @@ def analyze_reviews(reviews_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         + 0.20 * volume_component
     )
 
-    # B. Bot penalty (Gemini)
-    # Only allow Gemini to reduce up to ~40 points.
-    score -= bot_prob * 0.4
+    # B. Heuristic bot probability (no GenAI)
+    unique_texts = set(texts)
+    duplicates_count = max(0, len(texts) - len(unique_texts))
+    duplicate_fraction = (duplicates_count / review_count) if review_count > 0 else 0.0
+
+    short_texts = [t for t in texts if len(t) < 30]
+    short_fraction = (len(short_texts) / review_count) if review_count > 0 else 0.0
+
+    try:
+        rating_std = statistics.pstdev(ratings) if len(ratings) > 1 else 0.0
+    except statistics.StatisticsError:
+        rating_std = 0.0
+
+    bot_prob = 0.0
+    # Many duplicates → likely templated / copy-paste reviews
+    bot_prob += duplicate_fraction * 60.0
+    # Mostly ultra-short reviews
+    bot_prob += short_fraction * 30.0
+    # Big mismatch between stars and text sentiment
+    if discrepancy > 0.6:
+        bot_prob += min(20.0, (discrepancy - 0.6) * 50.0)
+    # All 5-star with almost no variance and enough reviews → light suspicion
+    if review_count >= 20 and rating_std < 0.2 and avg_rating > 4.7:
+        bot_prob += 10.0
+
+    bot_prob = max(0, min(100, int(round(bot_prob))))
 
     # C. Discrepancy penalty (Text vs stars)
     if discrepancy > 0.5:
         score -= (discrepancy - 0.5) * 30
 
     # D. Repetitive text penalty (duplicate detection)
-    unique_texts = set(texts)
-    duplicates_count = max(0, len(texts) - len(unique_texts))
     if duplicates_count > 0:
-        score -= min(duplicates_count * 6, 24)
+        score -= min(duplicates_count * 4, 16)
 
     # E. Short review penalty (low-effort reviews)
     avg_len = statistics.mean([len(t) for t in texts]) if texts else 0
@@ -273,5 +288,5 @@ def analyze_reviews(reviews_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         "pros": gemini_output.get("pros", []),
         "cons": gemini_output.get("cons", []),
         "verdict": gemini_output.get("verdict", ""),
-        "safety_label": label
+        "safety_label": label,
     }
