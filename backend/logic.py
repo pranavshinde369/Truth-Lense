@@ -2,9 +2,10 @@ import os
 import re
 import json
 import statistics
-from typing import List, Dict, Any
-from urllib.parse import urlparse
+from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse, quote_plus
 
+import requests
 from dotenv import load_dotenv
 from textblob import TextBlob
 import Levenshtein
@@ -84,12 +85,68 @@ def check_phishing(url: str) -> str:
         return "Unknown"
 
 
-def analyze_site_risk(domain_status: str, page_text: str) -> Dict[str, Any]:
+def _extract_price_rupees(text: str) -> Optional[float]:
+    """
+    Extracts a price in rupees from arbitrary text like '₹2,999' or 'Rs. 1,499'.
+    Returns the first match as a float, or None.
+    """
+    if not text:
+        return None
+    # Common Rupee notations
+    match = re.search(r"(?:₹|rs\.?\s*)([\d,]{3,9})", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        value = match.group(1).replace(",", "")
+        return float(value)
+    except ValueError:
+        return None
+
+
+def price_sanity_check(title: str, page_text: str) -> Dict[str, Any]:
+    """
+    Very lightweight price sanity check:
+    - Extracts a local price from the current page text.
+    - Searches Amazon.in for the product title and extracts a reference price.
+    - Flags an anomaly if the local price is >50% cheaper than the reference.
+    """
+    local_price = _extract_price_rupees(page_text)
+    if not title or not local_price:
+        return {"anomaly": False, "local_price": None, "reference_price": None}
+
+    try:
+        query = quote_plus(title[:80])
+        url = f"https://www.amazon.in/s?k={query}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (TruthLens Hackathon Prototype)",
+        }
+        resp = requests.get(url, headers=headers, timeout=4)
+        if resp.status_code != 200:
+            return {"anomaly": False, "local_price": local_price, "reference_price": None}
+
+        ref_price = _extract_price_rupees(resp.text)
+        if not ref_price:
+            return {"anomaly": False, "local_price": local_price, "reference_price": None}
+
+        # If local is dramatically cheaper than Amazon reference, flag anomaly.
+        anomaly = local_price < 0.5 * ref_price
+        return {
+            "anomaly": anomaly,
+            "local_price": local_price,
+            "reference_price": ref_price,
+        }
+    except Exception:
+        # Network or parsing issues: just skip price sanity
+        return {"anomaly": False, "local_price": local_price, "reference_price": None}
+
+
+def analyze_site_risk(domain_status: str, page_text: str, title: str = "") -> Dict[str, Any]:
     """
     Lightweight, traditional risk analysis for arbitrary e-commerce pages.
     Used when we don't have structured reviews (non-Amazon/Flipkart).
     """
-    text = (page_text or "").lower()
+    text_raw = page_text or ""
+    text = text_raw.lower()
 
     # Baseline per domain status
     if domain_status == "Phishing Warning":
@@ -146,6 +203,22 @@ def analyze_site_risk(domain_status: str, page_text: str) -> Dict[str, Any]:
         score += 5
         reasons_pros.append("Page mentions policies or contact / support information.")
 
+    # Optional: price sanity check vs Amazon for non-whitelisted / suspicious domains
+    price_info = price_sanity_check(title, text_raw) if title else {
+        "anomaly": False,
+        "local_price": None,
+        "reference_price": None,
+    }
+    if price_info.get("anomaly"):
+        score -= 15
+        lp = price_info.get("local_price")
+        rp = price_info.get("reference_price")
+        reasons_cons.append(
+            f"Price appears much lower than on major marketplaces (local ≈ ₹{int(lp)} vs reference ≈ ₹{int(rp)})."
+        )
+    elif price_info.get("reference_price") and price_info.get("local_price"):
+        reasons_pros.append("Price appears broadly in line with major marketplaces.")
+
     # Clamp score
     final_score = max(0, min(100, int(round(score))))
 
@@ -172,6 +245,9 @@ def analyze_site_risk(domain_status: str, page_text: str) -> Dict[str, Any]:
         "pros": reasons_pros,
         "cons": reasons_cons,
         "verdict": verdict,
+        "price_anomaly": bool(price_info.get("anomaly")),
+        "local_price": price_info.get("local_price"),
+        "reference_price": price_info.get("reference_price"),
     }
 
 def analyze_reviews(reviews_data: List[Dict[str, Any]]) -> Dict[str, Any]:

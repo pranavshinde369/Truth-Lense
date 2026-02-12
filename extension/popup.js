@@ -11,6 +11,14 @@ document.addEventListener('DOMContentLoaded', function() {
   const consList = document.getElementById('consList');
   const botProb = document.getElementById('botProb');
   const footerDot = document.getElementById('footerDot');
+  const whyList = document.getElementById('whyList');
+
+  let lastContext = {
+    url: '',
+    reviewCount: 0,
+    mode: 'unknown', // 'reviews' or 'site'
+    platform: 'Unknown',
+  };
 
   analyzeBtn.addEventListener('click', async () => {
     // 1. Reset UI
@@ -56,8 +64,20 @@ document.addEventListener('DOMContentLoaded', function() {
 
       if (reviewCount > 0) {
         statusDiv.textContent = `Analyzing ${reviewCount} reviews...`;
+        lastContext.mode = 'reviews';
       } else {
         statusDiv.textContent = "Analyzing site risk (no reviews detected)...";
+        lastContext.mode = 'site';
+      }
+
+      lastContext.url = response.url || (tab && tab.url) || '';
+      lastContext.reviewCount = reviewCount;
+      if (reviewCount > 0 && response.reviews[0] && response.reviews[0].platform) {
+        lastContext.platform = response.reviews[0].platform;
+      } else if (lastContext.mode === 'site') {
+        lastContext.platform = 'Site-level';
+      } else {
+        lastContext.platform = 'Unknown';
       }
 
       // 4. Send to Backend (works for both review and site-risk modes)
@@ -125,6 +145,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // Lists
     fillList(prosList, data.pros);
     fillList(consList, data.cons);
+
+    updateWhyList(data);
   }
 
   function fillList(element, items) {
@@ -133,6 +155,57 @@ document.addEventListener('DOMContentLoaded', function() {
       const li = document.createElement('li');
       li.textContent = item;
       element.appendChild(li);
+    });
+  }
+
+  function updateWhyList(data) {
+    if (!whyList) return;
+    whyList.innerHTML = '';
+
+    const bullets = [];
+    const isReviewMode = lastContext.mode === 'reviews' && lastContext.reviewCount > 0;
+
+    let domain = 'Unknown domain';
+    if (lastContext.url) {
+      try {
+        const u = new URL(lastContext.url);
+        domain = u.hostname;
+      } catch (e) {
+        domain = lastContext.url;
+      }
+    }
+
+    if (isReviewMode) {
+      bullets.push(
+        `Sentiment: ${Number(data.sentiment_score || 0).toFixed(2)} (DistilBERT)`
+      );
+      bullets.push(
+        `Bot probability: ${data.bot_probability}% (duplicates/short-review heuristics)`
+      );
+      bullets.push(
+        `Reviews analyzed: ${lastContext.reviewCount} (${lastContext.platform})`
+      );
+    } else {
+      bullets.push('Mode: Site-level risk (no product reviews scraped)');
+    }
+
+    bullets.push(`Domain: ${domain} (${data.phishing_status || 'Unknown'})`);
+
+    const hasPriceAnomaly =
+      Array.isArray(data.cons) &&
+      data.cons.some((c) =>
+        String(c).toLowerCase().includes('price appears much lower')
+      );
+    if (hasPriceAnomaly) {
+      bullets.push(
+        'Price sanity: Possible anomaly vs major marketplaces (could be counterfeit/scam).'
+      );
+    }
+
+    bullets.forEach((text) => {
+      const li = document.createElement('li');
+      li.textContent = text;
+      whyList.appendChild(li);
     });
   }
 });

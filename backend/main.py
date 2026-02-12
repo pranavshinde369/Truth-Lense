@@ -75,7 +75,7 @@ async def analyze_product(payload: ScrapeRequest):
         # If no reviews were scraped (unsupported site, or rating summary only),
         # fall back to a domain + page-text safety assessment so TruthLens still "works".
         if not review_dicts:
-            site_result = analyze_site_risk(domain_status, page_text)
+            site_result = analyze_site_risk(domain_status, page_text, payload.title)
 
             return AnalysisResponse(
                 trust_score=int(site_result.get("site_score", 0)),
