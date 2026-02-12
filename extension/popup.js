@@ -43,16 +43,24 @@ document.addEventListener('DOMContentLoaded', function() {
         // Retry scrape
         response = await sendMessagePromise(tab.id, { type: "TRUTHLENS_SCRAPE_PAGE" });
       }
-      
-      if (!response || !response.reviews || response.reviews.length === 0) {
-        statusDiv.textContent = "❌ No reviews found. Are you on a product page?";
+
+      if (!response) {
+        statusDiv.textContent = "❌ Could not read this page.";
         analyzeBtn.disabled = false;
         return;
       }
 
-      statusDiv.textContent = `Analyzing ${response.reviews.length} reviews...`;
+      const reviewCount = Array.isArray(response.reviews)
+        ? response.reviews.length
+        : 0;
 
-      // 4. Send to Backend
+      if (reviewCount > 0) {
+        statusDiv.textContent = `Analyzing ${reviewCount} reviews...`;
+      } else {
+        statusDiv.textContent = "Analyzing site risk (no reviews detected)...";
+      }
+
+      // 4. Send to Backend (works for both review and site-risk modes)
       const apiRes = await fetch('http://127.0.0.1:8000/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

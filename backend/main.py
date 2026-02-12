@@ -7,7 +7,7 @@ from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import logic functions
-from logic import analyze_reviews, check_phishing
+from logic import analyze_reviews, analyze_site_risk, check_phishing
 
 app = FastAPI()
 
@@ -32,6 +32,8 @@ class ScrapeRequest(BaseModel):
     # FIX: Default value added so it never fails if title is missing
     title: str = "Unknown Product"
     reviews: List[ReviewItem] = []
+    # Optional raw page text for generic site-risk analysis (non-Amazon/Flipkart)
+    page_text: Optional[str] = ""
 
 class AnalysisResponse(BaseModel):
     trust_score: int
@@ -60,6 +62,7 @@ async def analyze_product(payload: ScrapeRequest):
 
     try:
         domain_status = check_phishing(payload.url)
+        page_text = payload.page_text or ""
 
         # Convert Pydantic models to dicts
         review_dicts = []
@@ -69,6 +72,23 @@ async def analyze_product(payload: ScrapeRequest):
             else:
                 review_dicts.append(r.dict())
 
+        # If no reviews were scraped (unsupported site, or rating summary only),
+        # fall back to a domain + page-text safety assessment so TruthLens still "works".
+        if not review_dicts:
+            site_result = analyze_site_risk(domain_status, page_text)
+
+            return AnalysisResponse(
+                trust_score=int(site_result.get("site_score", 0)),
+                sentiment_score=0.0,
+                bot_probability=0,
+                safety_label=site_result.get("site_label", "Unknown"),
+                pros=site_result.get("pros", []),
+                cons=site_result.get("cons", []),
+                verdict=site_result.get("verdict", ""),
+                phishing_status=domain_status,
+            )
+
+        # Normal path: we have structured reviews (Amazon / Flipkart / others we support)
         analysis_result = analyze_reviews(review_dicts)
 
         base_trust = int(analysis_result.get("trust_score", 0))

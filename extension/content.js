@@ -6,7 +6,13 @@ const getText = (parent, selector) => {
   return el ? el.innerText.trim() : "";
 };
 
-// 1. AMAZON SCRAPER
+// 1. Helper: generic page text (for unsupported sites risk analysis)
+function getPageText() {
+  const bodyText = document.body ? document.body.innerText || "" : "";
+  return bodyText.replace(/\s+/g, " ").trim().slice(0, 5000); // cap length
+}
+
+// 2. AMAZON SCRAPER
 function scrapeAmazon() {
   const title = getText(document, "#productTitle");
   const reviewNodes = document.querySelectorAll('[data-hook="review"]');
@@ -32,10 +38,10 @@ function scrapeAmazon() {
     };
   }).filter(r => r.text.length > 0);
 
-  return { title, url: window.location.href, reviews };
+  return { title, url: window.location.href, reviews, page_text: getPageText() };
 }
 
-// 2. FLIPKART SCRAPER
+// 3. FLIPKART SCRAPER
 function scrapeFlipkart() {
   const title = getText(document, ".B_NuCI") || getText(document, ".mEh187"); // Mobile/Desktop classes
   const reviewNodes = document.querySelectorAll("div.col.EPCmJX"); // Common container
@@ -61,10 +67,10 @@ function scrapeFlipkart() {
     };
   }).filter(r => r.text.length > 0);
 
-  return { title, url: window.location.href, reviews };
+  return { title, url: window.location.href, reviews, page_text: getPageText() };
 }
 
-// Main Logic
+// 4. Main Logic
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "TRUTHLENS_SCRAPE_PAGE") {
     try {
@@ -76,8 +82,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       } else if (url.includes("flipkart")) {
         data = scrapeFlipkart();
       } else {
-        // Fallback for unsupported sites
-        data = { title: document.title, url, reviews: [] };
+        // Fallback for unsupported sites: send page_text for site-level risk analysis
+        data = { title: document.title, url, reviews: [], page_text: getPageText() };
       }
       
       sendResponse(data);

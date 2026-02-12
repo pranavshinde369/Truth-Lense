@@ -83,6 +83,97 @@ def check_phishing(url: str) -> str:
     except:
         return "Unknown"
 
+
+def analyze_site_risk(domain_status: str, page_text: str) -> Dict[str, Any]:
+    """
+    Lightweight, traditional risk analysis for arbitrary e-commerce pages.
+    Used when we don't have structured reviews (non-Amazon/Flipkart).
+    """
+    text = (page_text or "").lower()
+
+    # Baseline per domain status
+    if domain_status == "Phishing Warning":
+        score = 25
+        reasons_cons = ["Domain closely resembles a known brand (possible typosquatting)."]
+        reasons_pros = []
+    elif domain_status == "Safe":
+        score = 70
+        reasons_cons = []
+        reasons_pros = ["Domain matches a known marketplace or brand."]
+    else:
+        score = 50
+        reasons_cons = ["Domain is not in the trusted marketplaces list."]
+        reasons_pros = []
+
+    # Heuristic content checks
+    scam_phrases = [
+        "100% off",
+        "90% off",
+        "80% off",
+        "free iphone",
+        "free ipad",
+        "only today",
+        "limited time offer",
+        "limited stock",
+        "act now",
+        "win big",
+    ]
+    strong_urgency = any(p in text for p in scam_phrases)
+    if strong_urgency:
+        score -= 10
+        reasons_cons.append("Page uses aggressive discount / urgency language.")
+
+    # Payment-related hints
+    if "upi only" in text or "paytm only" in text or "bitcoin" in text:
+        score -= 10
+        reasons_cons.append("Page mentions limited or unusual payment methods.")
+
+    if "no refund" in text or "non-refundable" in text or "no returns" in text:
+        score -= 10
+        reasons_cons.append("Page mentions no-refund / no-returns policy.")
+
+    # Trust signals
+    trust_keywords = [
+        "return policy",
+        "refund policy",
+        "contact us",
+        "customer support",
+        "privacy policy",
+        "terms and conditions",
+        "terms & conditions",
+    ]
+    if any(k in text for k in trust_keywords):
+        score += 5
+        reasons_pros.append("Page mentions policies or contact / support information.")
+
+    # Clamp score
+    final_score = max(0, min(100, int(round(score))))
+
+    if final_score >= 75:
+        label = "Likely Legitimate (Site-level)"
+    elif final_score >= 45:
+        label = "Unverified Site / Use Caution"
+    else:
+        label = "High Risk / Possible Scam"
+
+    if not reasons_pros:
+        reasons_pros = ["No obvious scam signals detected in the visible page text."]
+    if not reasons_cons:
+        reasons_cons = ["Risk score based on limited page information."]
+
+    verdict = (
+        "This assessment is based on the domain and visible page text only. "
+        "Double-check the URL and be cautious before entering payment details."
+    )
+
+    return {
+        "site_score": final_score,
+        "site_label": label,
+        "pros": reasons_pros,
+        "cons": reasons_cons,
+        "verdict": verdict,
+    }
+
 def analyze_reviews(reviews_data: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Analyzes a list of structured review objects:
