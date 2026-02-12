@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TruthLens</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  
+  <div class="tl-root">
+    <div class="tl-header">
+      <div class="tl-logo-circle">TL</div>
+      <div class="tl-header-text">
+        <h1>TruthLens</h1>
+        <p class="tl-subtitle">AI Trust Verified</p>
+      </div>
+    </div>
+
+    <button id="analyzeBtn" class="tl-primary-btn">
+      <span>Analyze Page</span>
+    </button>
+    <div id="status" class="tl-status-text">Ready to scan...</div>
+
+    <div id="resultsArea" class="tl-results hidden">
+      
+      <div class="tl-score-row">
+        <div>
+          <p class="tl-label">Trust Score</p>
+          <div id="scoreValue" class="tl-score-value">--</div>
+        </div>
+        <div id="safetyBadge" class="tl-badge tl-badge-neutral">Unknown</div>
+      </div>
+
+      <div class="tl-verdict">
+        <h2>Verdict</h2>
+        <p id="verdictText">Analysis pending...</p>
+      </div>
+
+      <div class="tl-columns">
+        <div class="tl-column">
+          <h2>PROS</h2>
+          <ul id="prosList" class="tl-list"></ul>
+        </div>
+        <div class="tl-column">
+          <h2>CONS</h2>
+          <ul id="consList" class="tl-list"></ul>
+        </div>
+      </div>
+
+      <div class="tl-footer">
+        <div id="footerDot" class="tl-dot"></div>
+        <span class="tl-footer-text">Bot Probability: <span id="botProb">0</span>%</span>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+textblob
+google-generativeai
+python-levenshtein
+python-dotenv
+requests
+transformers
+torch
